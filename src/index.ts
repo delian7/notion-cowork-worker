@@ -73,7 +73,8 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
   console.log("[webhook] Received event:", JSON.stringify(payload).slice(0, 500));
 
   // Extract page ID from the webhook payload (thin event — no properties included)
-  const pageId = payload?.data?.id;
+  // Notion sends the page ID at entity.id (not data.id)
+  const pageId = payload?.entity?.id;
   if (!pageId) {
     console.warn("[webhook] No page ID in payload, skipping.");
     return new Response(
