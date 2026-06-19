@@ -140,12 +140,23 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
   const hermesUrl = `${env.HERMES_BASE_URL}/webhooks/notion-ready-for-cowork`;
   const signature = await hmacSha256(env.HERMES_WEBHOOK_SECRET, rawBody);
 
+  // Map Notion event types to X-GitHub-Event values Hermes recognizes
+  // Notion sends: page.created, page.properties_updated, page.content_updated, etc.
+  // Hermes expects: page.created, page.updated
+  const notionEventType = payload?.type || "";
+  let githubEvent = notionEventType;
+  if (notionEventType.startsWith("page.") && notionEventType !== "page.created") {
+    githubEvent = "page.updated";
+  }
+  console.log(`[webhook] Notion event: ${notionEventType} → X-GitHub-Event: ${githubEvent}`);
+
   try {
     const resp = await fetch(hermesUrl, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "X-Hub-Signature-256": `sha256=${signature}`,
+        "X-GitHub-Event": githubEvent,
       },
       body: rawBody,
     });
