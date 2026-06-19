@@ -116,13 +116,13 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
       );
     }
 
-    // Filter 2: "Status" must be "Not Started"
+    // Filter 2: "Status" must be "Not started"
     // Status property type is "status" (not "select"): { "status": { "name": "..." } }
     const status = props["Status"]?.status?.name;
-    if (status !== "Not Started") {
-      console.log(`[webhook] Page ${pageId}: Status is "${status ?? "(none)"}" (not "Not Started"), skipping.`);
+    if (status !== "Not started") {
+      console.log(`[webhook] Page ${pageId}: Status is "${status ?? "(none)"}" (not "Not started"), skipping.`);
       return new Response(
-        JSON.stringify({ success: true, message: `Skipped: Status is "${status ?? "(none)"}" (not "Not Started").` }),
+        JSON.stringify({ success: true, message: `Skipped: Status is "${status ?? "(none)"}" (not "Not started").` }),
         { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
       );
     }
