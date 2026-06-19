@@ -2,15 +2,18 @@
 //
 // Routes:
 //   POST /tasks   — creates a task in the Notion Session Memory & Task Tracker database
-//   POST /webhook — receives Notion automation webhook actions, forwards to Hermes with HMAC
+//   POST /webhook — receives Notion integration webhooks, forwards to Hermes with HMAC
+//
+// Notion Integration Webhook Verification:
+//   When you register the webhook URL in Notion, they send a verification_token challenge.
+//   This worker logs it to Cloudflare's console and echoes it back to complete verification.
+//   All subsequent events are HMAC-SHA256 signed with that verification_token.
 //
 // Deploy:
 //   cd cloudflare-notion-worker
 //   npx wrangler secret put NOTION_API_KEY
 //   npx wrangler secret put HERMES_WEBHOOK_SECRET
 //   npx wrangler deploy
-
-import { createHmac } from "node:crypto";
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
@@ -34,7 +37,6 @@ async function hmacSha256(secret: string, message: string): Promise<string> {
 
 // ── Route: POST /webhook ────────────────────────────────────────────
 async function handleWebhook(request: Request, env: Env): Promise<Response> {
-  // Read raw body for forwarding
   const rawBody = await request.text();
 
   let payload: any;
@@ -47,9 +49,28 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
     );
   }
 
-  // Basic validation: Notion webhook actions send page properties
-  // We accept any JSON payload — the Hermes agent will figure out the rest
-  console.log("[webhook] Received payload:", JSON.stringify(payload).slice(0, 500));
+  // ── Notion verification handshake ───────────────────────────────
+  // When you first register the webhook URL, Notion sends a challenge:
+  //   { "verification_token": "abc123..." }
+  // You must echo the token back to complete verification.
+  if (payload.verification_token) {
+    console.log("═══════════════════════════════════════════════════════");
+    console.log("🔑 NOTION VERIFICATION TOKEN (save this!):");
+    console.log(payload.verification_token);
+    console.log("═══════════════════════════════════════════════════════");
+    console.log("ℹ️  Use this token as HERMES_WEBHOOK_SECRET for HMAC validation.");
+    console.log("ℹ️  Run: npx wrangler secret put HERMES_WEBHOOK_SECRET");
+    console.log("ℹ️  Then paste the token above.");
+    console.log("═══════════════════════════════════════════════════════");
+
+    return new Response(
+      JSON.stringify({ verification_token: payload.verification_token }),
+      { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+
+  // ── Normal webhook event ────────────────────────────────────────
+  console.log("[webhook] Received event:", JSON.stringify(payload).slice(0, 500));
 
   // Forward to Hermes webhook with HMAC signature
   const hermesUrl = `${env.HERMES_BASE_URL}/webhooks/notion-ready-for-cowork`;
