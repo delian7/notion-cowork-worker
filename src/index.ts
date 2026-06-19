@@ -1,0 +1,192 @@
+// Cloudflare Worker: Notion Task Creator + Cowork Webhook Relay
+//
+// Routes:
+//   POST /tasks   — creates a task in the Notion Session Memory & Task Tracker database
+//   POST /webhook — receives Notion automation webhook actions, forwards to Hermes with HMAC
+//
+// Deploy:
+//   cd cloudflare-notion-worker
+//   npx wrangler secret put NOTION_API_KEY
+//   npx wrangler secret put HERMES_WEBHOOK_SECRET
+//   npx wrangler deploy
+
+import { createHmac } from "node:crypto";
+
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+};
+
+// ── HMAC-SHA256 helper ──────────────────────────────────────────────
+async function hmacSha256(secret: string, message: string): Promise<string> {
+  const encoder = new TextEncoder();
+  const keyData = encoder.encode(secret);
+  const msgData = encoder.encode(message);
+  const key = await crypto.subtle.importKey(
+    "raw", keyData, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, msgData);
+  return Array.from(new Uint8Array(sig))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// ── Route: POST /webhook ────────────────────────────────────────────
+async function handleWebhook(request: Request, env: Env): Promise<Response> {
+  // Read raw body for forwarding
+  const rawBody = await request.text();
+
+  let payload: any;
+  try {
+    payload = JSON.parse(rawBody);
+  } catch {
+    return new Response(
+      JSON.stringify({ error: "Invalid JSON body." }),
+      { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+
+  // Basic validation: Notion webhook actions send page properties
+  // We accept any JSON payload — the Hermes agent will figure out the rest
+  console.log("[webhook] Received payload:", JSON.stringify(payload).slice(0, 500));
+
+  // Forward to Hermes webhook with HMAC signature
+  const hermesUrl = `${env.HERMES_BASE_URL}/webhooks/notion-ready-for-cowork`;
+  const signature = await hmacSha256(env.HERMES_WEBHOOK_SECRET, rawBody);
+
+  try {
+    const resp = await fetch(hermesUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Hub-Signature-256": `sha256=${signature}`,
+      },
+      body: rawBody,
+    });
+
+    if (!resp.ok) {
+      const errText = await resp.text();
+      console.error("[webhook] Hermes returned", resp.status, errText);
+      return new Response(
+        JSON.stringify({ error: "Hermes webhook failed", status: resp.status, details: errText }),
+        { status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({ success: true, message: "Forwarded to Hermes." }),
+      { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  } catch (err: any) {
+    console.error("[webhook] Forward error:", err.message);
+    return new Response(
+      JSON.stringify({ error: "Failed to forward to Hermes", details: err.message }),
+      { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+}
+
+// ── Route: POST /tasks ──────────────────────────────────────────────
+async function handleTasks(request: Request, env: Env): Promise<Response> {
+  let body: any;
+  try {
+    body = await request.json();
+  } catch {
+    return new Response(
+      JSON.stringify({ error: "Invalid JSON body." }),
+      { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+
+  if (!body.title || typeof body.title !== "string" || !body.title.trim()) {
+    return new Response(
+      JSON.stringify({ error: "Missing required field: title (non-empty string)." }),
+      { status: 400, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+
+  const notionPayload: any = {
+    parent: { database_id: env.NOTION_DATABASE_ID },
+    properties: {
+      Item: { title: [{ text: { content: body.title.trim() } }] },
+      Status: { status: { name: body.status || "Not started" } },
+    },
+  };
+
+  if (body.type) notionPayload.properties.Type = { select: { name: body.type } };
+  if (body.priority) notionPayload.properties.Priority = { select: { name: body.priority } };
+  if (body.project) notionPayload.properties.Project = { select: { name: body.project } };
+  if (body.notes) notionPayload.properties.Notes = { rich_text: [{ text: { content: body.notes } }] };
+  if (typeof body.ready_for_cowork === "boolean") {
+    notionPayload.properties["Ready for Cowork"] = { checkbox: body.ready_for_cowork };
+  }
+  if (body.due_date) notionPayload.properties.Date = { date: { start: body.due_date } };
+
+  try {
+    const resp = await fetch("https://api.notion.com/v1/pages", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${env.NOTION_API_KEY}`,
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(notionPayload),
+    });
+
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      return new Response(
+        JSON.stringify({ error: "Notion API error", status: resp.status, details: data }),
+        { status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+      );
+    }
+
+    return new Response(
+      JSON.stringify({
+        success: true,
+        message: "Task created in Notion.",
+        notion_page_id: data.id,
+        notion_url: data.url,
+      }),
+      { status: 201, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  } catch (err: any) {
+    return new Response(
+      JSON.stringify({ error: "Worker runtime error", details: err.message }),
+      { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+}
+
+// ── Main handler ────────────────────────────────────────────────────
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    // Handle CORS preflight
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: CORS_HEADERS });
+    }
+
+    const url = new URL(request.url);
+
+    switch (url.pathname) {
+      case "/webhook":
+        return handleWebhook(request, env);
+      case "/tasks":
+        return handleTasks(request, env);
+      default:
+        return new Response(
+          JSON.stringify({ error: "Not found. Use /webhook or /tasks." }),
+          { status: 404, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+        );
+    }
+  },
+};
+
+export interface Env {
+  NOTION_API_KEY: string;
+  NOTION_DATABASE_ID: string;
+  HERMES_WEBHOOK_SECRET: string;
+  HERMES_BASE_URL: string;
+}
