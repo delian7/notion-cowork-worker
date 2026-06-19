@@ -72,7 +72,70 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
   // ── Normal webhook event ────────────────────────────────────────
   console.log("[webhook] Received event:", JSON.stringify(payload).slice(0, 500));
 
-  // Forward to Hermes webhook with HMAC signature
+  // Extract page ID from the webhook payload (thin event — no properties included)
+  const pageId = payload?.data?.id;
+  if (!pageId) {
+    console.warn("[webhook] No page ID in payload, skipping.");
+    return new Response(
+      JSON.stringify({ success: true, message: "No page ID, skipped." }),
+      { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+
+  // ── Fetch page properties from Notion to check filter conditions ──
+  try {
+    const pageResp = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${env.NOTION_API_KEY}`,
+        "Notion-Version": "2022-06-28",
+      },
+    });
+
+    if (!pageResp.ok) {
+      const errText = await pageResp.text();
+      console.error("[webhook] Notion page fetch failed:", pageResp.status, errText);
+      return new Response(
+        JSON.stringify({ error: "Failed to fetch page from Notion", status: pageResp.status }),
+        { status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+      );
+    }
+
+    const pageData = await pageResp.json();
+    const props = pageData?.properties || {};
+
+    // Filter 1: "Ready for Cowork" must be checked (true)
+    // Checkbox properties: { "checkbox": true/false }
+    const readyForCowork = props["Ready for Cowork"]?.checkbox;
+    if (!readyForCowork) {
+      console.log(`[webhook] Page ${pageId}: Ready for Cowork is not checked, skipping.`);
+      return new Response(
+        JSON.stringify({ success: true, message: "Skipped: Ready for Cowork not checked." }),
+        { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+      );
+    }
+
+    // Filter 2: "Status" must not be "Done"
+    // Select properties: { "select": { "name": "..." } }
+    const status = props["Status"]?.select?.name;
+    if (status === "Done") {
+      console.log(`[webhook] Page ${pageId}: Status is Done, skipping.`);
+      return new Response(
+        JSON.stringify({ success: true, message: "Skipped: Status is Done." }),
+        { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+      );
+    }
+
+    console.log(`[webhook] Page ${pageId}: Ready for Cowork = true, Status = ${status ?? "(none)"} → forwarding to Hermes.`);
+  } catch (err: any) {
+    console.error("[webhook] Error fetching page properties:", err.message);
+    return new Response(
+      JSON.stringify({ error: "Failed to fetch page properties", details: err.message }),
+      { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+
+  // ── Forward to Hermes webhook with HMAC signature ──────────────
   const hermesUrl = `${env.HERMES_BASE_URL}/webhooks/notion-ready-for-cowork`;
   const signature = await hmacSha256(env.HERMES_WEBHOOK_SECRET, rawBody);
 
