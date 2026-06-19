@@ -116,18 +116,18 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
       );
     }
 
-    // Filter 2: "Status" must not be "Done"
-    // Select properties: { "select": { "name": "..." } }
-    const status = props["Status"]?.select?.name;
-    if (status === "Done") {
-      console.log(`[webhook] Page ${pageId}: Status is Done, skipping.`);
+    // Filter 2: "Status" must be "Not Started"
+    // Status property type is "status" (not "select"): { "status": { "name": "..." } }
+    const status = props["Status"]?.status?.name;
+    if (status !== "Not Started") {
+      console.log(`[webhook] Page ${pageId}: Status is "${status ?? "(none)"}" (not "Not Started"), skipping.`);
       return new Response(
-        JSON.stringify({ success: true, message: "Skipped: Status is Done." }),
+        JSON.stringify({ success: true, message: `Skipped: Status is "${status ?? "(none)"}" (not "Not Started").` }),
         { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
       );
     }
 
-    console.log(`[webhook] Page ${pageId}: Ready for Cowork = true, Status = ${status ?? "(none)"} → forwarding to Hermes.`);
+    console.log(`[webhook] Page ${pageId}: Ready for Cowork = true, Status = ${status} → forwarding to Hermes.`);
   } catch (err: any) {
     console.error("[webhook] Error fetching page properties:", err.message);
     return new Response(
@@ -159,8 +159,10 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
       );
     }
 
+    const hermesRespText = await resp.text();
+    console.log("[webhook] Hermes returned", resp.status, hermesRespText.slice(0, 500));
     return new Response(
-      JSON.stringify({ success: true, message: "Forwarded to Hermes." }),
+      JSON.stringify({ success: true, message: "Forwarded to Hermes.", hermesStatus: resp.status }),
       { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
     );
   } catch (err: any) {
