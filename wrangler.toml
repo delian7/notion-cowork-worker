@@ -4,4 +4,4 @@ compatibility_date = "2025-01-01"
 
 [vars]
 NOTION_DATABASE_ID = "699e5cdc-742a-4c17-89e2-ef27f169cd0e"
-HERMES_BASE_URL = "http://127.0.0.1:8644"
+HERMES_BASE_URL = "http://hermeswebhook.delianpetrov.com"
