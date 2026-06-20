@@ -1,8 +1,9 @@
 // Cloudflare Worker: Notion Task Creator + Cowork Webhook Relay
 //
 // Routes:
-//   POST /tasks   — creates a task in the Notion Session Memory & Task Tracker database
-//   POST /webhook — receives Notion integration webhooks, forwards to Hermes with HMAC
+//   GET  /tasks-ready — queries Notion for tasks with Ready for Cowork = true AND Status = "Not started"
+//   POST /tasks      — creates a task in the Notion Session Memory & Task Tracker database
+//   POST /webhook    — receives Notion integration webhooks, forwards to Hermes with HMAC
 //
 // Notion Integration Webhook Verification:
 //   When you register the webhook URL in Notion, they send a verification_token challenge.
@@ -17,7 +18,7 @@
 
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
 
@@ -258,6 +259,71 @@ async function handleTasks(request: Request, env: Env): Promise<Response> {
   }
 }
 
+// ── Route: GET /tasks-ready ──────────────────────────────────────────
+// Returns tasks where Ready for Cowork = true AND Status = "Not started"
+// Requires ?token=<AGENT_API_TOKEN> query param for auth.
+async function handleTasksReady(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const token = url.searchParams.get("token");
+
+  if (!token || token !== env.AGENT_API_TOKEN) {
+    return new Response(
+      JSON.stringify({ error: "Unauthorized. Pass ?token=<token> query param." }),
+      { status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+
+  const filter = {
+    and: [
+      { property: "Ready for Cowork", checkbox: { equals: true } },
+      { property: "Status", status: { equals: "Not started" } },
+    ],
+  };
+
+  try {
+    const resp = await fetch(
+      `https://api.notion.com/v1/databases/${env.NOTION_DATABASE_ID}/query`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${env.NOTION_API_KEY}`,
+          "Notion-Version": "2022-06-28",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ filter, page_size: 100 }),
+      }
+    );
+
+    const data = await resp.json();
+
+    if (!resp.ok) {
+      return new Response(
+        JSON.stringify({ error: "Notion API error", status: resp.status, details: data }),
+        { status: 502, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+      );
+    }
+
+    const tasks = data.results.map((page: any) => ({
+      id: page.id,
+      title: page.properties.Item?.title?.[0]?.plain_text ?? "(untitled)",
+      status: page.properties.Status?.status?.name ?? null,
+      type: page.properties.Type?.select?.name ?? null,
+      priority: page.properties.Priority?.select?.name ?? null,
+      project: page.properties.Project?.select?.name ?? null,
+    }));
+
+    return new Response(
+      JSON.stringify({ tasks, count: tasks.length }),
+      { status: 200, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  } catch (err: any) {
+    return new Response(
+      JSON.stringify({ error: "Worker runtime error", details: err.message }),
+      { status: 500, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+}
+
 // ── Main handler ────────────────────────────────────────────────────
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
@@ -273,9 +339,11 @@ export default {
         return handleWebhook(request, env);
       case "/tasks":
         return handleTasks(request, env);
+      case "/tasks-ready":
+        return handleTasksReady(request, env);
       default:
         return new Response(
-          JSON.stringify({ error: "Not found. Use /webhook or /tasks." }),
+          JSON.stringify({ error: "Not found. Use /webhook, /tasks, or /tasks-ready." }),
           { status: 404, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
         );
     }
@@ -287,5 +355,6 @@ export interface Env {
   NOTION_DATABASE_ID: string;
   HERMES_WEBHOOK_SECRET: string;
   HERMES_BASE_URL: string;
+  AGENT_API_TOKEN: string;
 }
 
