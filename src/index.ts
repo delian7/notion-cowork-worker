@@ -184,8 +184,18 @@ async function handleTasks(request: Request, env: Env): Promise<Response> {
 
 // ── Route: GET /tasks-ready ──────────────────────────────────────────
 // Returns tasks where Ready for Cowork = true AND Status = "Not started"
-// No auth required — this is a read-only query endpoint.
+// Requires ?token=<AGENT_API_TOKEN> query param for auth.
 async function handleTasksReady(request: Request, env: Env): Promise<Response> {
+  const url = new URL(request.url);
+  const token = url.searchParams.get("token");
+
+  if (!token || token !== env.AGENT_API_TOKEN) {
+    return new Response(
+      JSON.stringify({ error: "Unauthorized. Pass ?token=<token> query param." }),
+      { status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+
   const filter = {
     and: [
       { property: "Ready for Cowork", checkbox: { equals: true } },
@@ -268,5 +278,6 @@ export interface Env {
   NOTION_DATABASE_ID: string;
   HERMES_WEBHOOK_SECRET: string;
   HERMES_BASE_URL: string;
+  AGENT_API_TOKEN: string;
 }
 
