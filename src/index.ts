@@ -198,6 +198,15 @@ async function handleTasks(request: Request, env: Env): Promise<Response> {
     );
   }
 
+  // Auth: require token in body or X-Agent-Token header
+  const token = body.token || request.headers.get("X-Agent-Token");
+  if (!token || token !== env.AGENT_API_TOKEN) {
+    return new Response(
+      JSON.stringify({ error: "Unauthorized. Include token in body or X-Agent-Token header." }),
+      { status: 401, headers: { ...CORS_HEADERS, "Content-Type": "application/json" } }
+    );
+  }
+
   if (!body.title || typeof body.title !== "string" || !body.title.trim()) {
     return new Response(
       JSON.stringify({ error: "Missing required field: title (non-empty string)." }),
