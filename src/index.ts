@@ -90,7 +90,7 @@ async function handleWebhook(request: Request, env: Env): Promise<Response> {
       method: "GET",
       headers: {
         Authorization: `Bearer ${env.NOTION_API_KEY}`,
-        "Notion-Version": "2022-06-28",
+        "Notion-Version": "2025-09-03",
       },
     });
 
@@ -215,7 +215,7 @@ async function handleTasks(request: Request, env: Env): Promise<Response> {
   }
 
   const notionPayload: any = {
-    parent: { database_id: env.NOTION_DATABASE_ID },
+    parent: { data_source_id: env.NOTION_DATA_SOURCE_ID || "85e7684a-e50c-405e-b3be-8cba6a131c5b" },
     properties: {
       Item: { title: [{ text: { content: body.title.trim() } }] },
       Status: { status: { name: body.status || "Not started" } },
@@ -236,7 +236,7 @@ async function handleTasks(request: Request, env: Env): Promise<Response> {
       method: "POST",
       headers: {
         Authorization: `Bearer ${env.NOTION_API_KEY}`,
-        "Notion-Version": "2022-06-28",
+        "Notion-Version": "2025-09-03",
         "Content-Type": "application/json",
       },
       body: JSON.stringify(notionPayload),
@@ -290,13 +290,16 @@ async function handleTasksReady(request: Request, env: Env): Promise<Response> {
   };
 
   try {
+    // Query the data source directly (not the database) to support
+    // multi-source databases. Requires Notion-Version 2025-09-03+.
+    const dataSourceId = env.NOTION_DATA_SOURCE_ID || "85e7684a-e50c-405e-b3be-8cba6a131c5b";
     const resp = await fetch(
-      `https://api.notion.com/v1/databases/${env.NOTION_DATABASE_ID}/query`,
+      `https://api.notion.com/v1/data_sources/${dataSourceId}/query`,
       {
         method: "POST",
         headers: {
           Authorization: `Bearer ${env.NOTION_API_KEY}`,
-          "Notion-Version": "2022-06-28",
+          "Notion-Version": "2025-09-03",
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ filter, page_size: 100 }),
@@ -362,6 +365,7 @@ export default {
 export interface Env {
   NOTION_API_KEY: string;
   NOTION_DATABASE_ID: string;
+  NOTION_DATA_SOURCE_ID: string;
   HERMES_WEBHOOK_SECRET: string;
   HERMES_BASE_URL: string;
   AGENT_API_TOKEN: string;
